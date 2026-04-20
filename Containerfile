@@ -1,10 +1,10 @@
 FROM oven/bun:alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /app
-COPY registry/package.json registry/bun.lock* ./
+COPY package.json bun.lock* ./
 RUN bun install
-COPY registry/src/ src/
-COPY registry/tsconfig.json ./
+COPY src/ src/
+COPY tsconfig.json ./
 RUN bun build --compile src/main.ts --outfile registry
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates libstdc++
