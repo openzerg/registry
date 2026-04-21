@@ -1,49 +1,59 @@
-import { randomUUID, now, dbQuery, unwrap } from "./common.js"
-import type { DB } from "../db.js"
-import type { Instance } from "@openzerg/common/entities/instance-schema.js"
+import { randomUUID } from "node:crypto"
+import { gelQuery, unwrap } from "@openzerg/common/gel"
+import { ok } from "neverthrow"
+import {
+  listInstances, insertInstance, heartbeatInstance,
+} from "@openzerg/common/queries"
 import type { RegisterRequest, HeartbeatRequest, ListInstancesRequest } from "@openzerg/common/gen/registry/v1_pb.js"
+import type { GelClient } from "@openzerg/common/gel"
 
-export function registerRegistryHandlers(db: DB) {
+export function registerRegistryHandlers(gel: GelClient) {
   return {
     register(req: RegisterRequest) {
-      return unwrap(dbQuery(async () => {
-        const id = randomUUID()
-        const serviceToken = `st-${randomUUID()}`
-        const ts = now()
-        await db.insertInto("registry_instances").values({
-          id, name: req.name, instanceType: req.instanceType,
-          ip: req.ip, port: req.port, publicUrl: req.publicUrl,
-          lifecycle: "active", lastSeen: ts,
+      const serviceToken = `st-${randomUUID()}`
+      const ts = BigInt(Math.floor(Date.now() / 1000))
+      return unwrap(
+        gelQuery(() => insertInstance(gel, {
+          name: req.name,
+          instanceType: req.instanceType,
+          ip: req.ip,
+          port: req.port,
+          publicUrl: req.publicUrl,
+          lastSeen: Number(ts),
           metadata: JSON.stringify(req.metadata ?? {}),
-          createdAt: ts, updatedAt: ts,
-        }).execute()
-        return { instanceId: id, serviceToken }
-      }))
+          createdAt: Number(ts),
+          updatedAt: Number(ts),
+        })).andThen((result) => ok({ instanceId: result.id, serviceToken })),
+      )
     },
 
     heartbeat(req: HeartbeatRequest) {
-      return unwrap(dbQuery(async () => {
-        const ts = now()
-        await db.updateTable("registry_instances")
-          .set({ lastSeen: ts, updatedAt: ts, lifecycle: "active" })
-          .where("id", "=", req.instanceId).execute()
-        return {}
-      }))
+      const ts = BigInt(Math.floor(Date.now() / 1000))
+      return unwrap(
+        gelQuery(() => heartbeatInstance(gel, {
+          id: req.instanceId,
+          lastSeen: Number(ts),
+          updatedAt: Number(ts),
+        })).andThen(() => ok({})),
+      )
     },
 
     listInstances(req: ListInstancesRequest) {
-      return unwrap(dbQuery(async () => {
-        let query = db.selectFrom("registry_instances").selectAll()
-        if (req.instanceType) query = query.where("instanceType", "=", req.instanceType)
-        const rows: Instance[] = await query.execute()
-        return {
+      return unwrap(
+        gelQuery(() => listInstances(gel, {
+          instanceType: req.instanceType || null,
+        })).andThen((rows) => ok({
           instances: rows.map((r) => ({
-            instanceId: r.id, name: r.name, instanceType: r.instanceType,
-            url: r.publicUrl, lifecycle: r.lifecycle, lastSeen: r.lastSeen,
+            instanceId: r.id,
+            name: r.name,
+            instanceType: r.instanceType,
+            url: r.publicUrl,
+            lifecycle: r.lifecycle,
+            lastSeen: BigInt(r.lastSeen),
             metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata ?? {},
           })),
-        }
-      }))
+        })),
+      )
     },
   }
 }

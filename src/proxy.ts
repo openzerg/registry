@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
-import type { DB } from "./db.js"
+import { gelQuery } from "@openzerg/common/gel"
+import { getActiveInstanceByType } from "@openzerg/common/queries"
+import type { GelClient } from "@openzerg/common/gel"
 
 const PROXY_ROUTES: Record<string, string> = {
   "/api/agent": "agent",
@@ -14,7 +16,7 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 }
 
-export function createProxyHandler(db: DB) {
+export function createProxyHandler(gel: GelClient) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = req.url ?? "/"
     const setCors = (r: ServerResponse) => {
@@ -31,22 +33,20 @@ export function createProxyHandler(db: DB) {
         return true
       }
 
-      const rows = await db.selectFrom("registry_instances")
-        .select(["publicUrl"])
-        .where("instanceType", "=", instanceType)
-        .where("lifecycle", "=", "active")
-        .orderBy("lastSeen", "desc")
-        .limit(1)
-        .execute()
+      const instance = await gelQuery(() => getActiveInstanceByType(gel, { instanceType }))
+        .match(
+          (val) => val,
+          () => null,
+        )
 
-      if (rows.length === 0) {
+      if (!instance) {
         setCors(res)
         res.writeHead(502, { "Content-Type": "application/json" })
         res.end(JSON.stringify({ error: `No active ${instanceType} instance found` }))
         return true
       }
 
-      const targetBase = rows[0].publicUrl.replace(/\/$/, "")
+      const targetBase = instance.publicUrl.replace(/\/$/, "")
       const targetPath = url.slice(prefix.length) || "/"
       const targetUrl = `${targetBase}${targetPath}`
 

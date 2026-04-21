@@ -1,17 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { connectNodeAdapter } from "@connectrpc/connect-node"
 import { WorkspaceManagerClient, ToolServerManagerClient } from "@openzerg/common"
+import { createGelClient, gelQuery } from "@openzerg/common/gel"
+import { listIdleSessions, setSessionStopped } from "@openzerg/common/queries"
 import { loadConfig } from "./config.js"
-import { openDB, autoMigrate } from "./db.js"
 import { createRegistryRouter } from "./router.js"
 import { createProxyHandler } from "./proxy.js"
-import { now } from "./handlers/util.js"
 
 const cfg = loadConfig()
 
 async function main() {
-  await autoMigrate(cfg.databaseURL)
-  const db = openDB(cfg.databaseURL)
+  const gel = createGelClient(cfg.gelDSN)
 
   const wm = new WorkspaceManagerClient({
     baseURL: process.env.WM_URL || "http://localhost:25020",
@@ -21,10 +20,10 @@ async function main() {
   })
 
   const rpcHandler = connectNodeAdapter({
-    routes: createRegistryRouter(db, wm, tsm),
+    routes: createRegistryRouter(gel, wm, tsm),
   })
 
-  const proxyHandler = createProxyHandler(db)
+  const proxyHandler = createProxyHandler(gel)
 
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -47,12 +46,16 @@ async function main() {
 
   setInterval(async () => {
     try {
-      const threshold = now() - BigInt(cfg.idleTimeoutSec)
-      const idleSessions = await db.selectFrom("registry_sessions").selectAll()
-        .where("state", "=", "idle")
-        .where("lastActiveAt", "<", threshold)
-        .where("lastActiveAt", ">", 0n)
-        .execute()
+      const threshold = BigInt(Math.floor(Date.now() / 1000)) - BigInt(cfg.idleTimeoutSec)
+
+      const idleSessions = await gelQuery(() => listIdleSessions(gel, { threshold: Number(threshold) }))
+        .match(
+          (sessions) => sessions,
+          (e) => {
+            console.error("[registry] idle scanner listIdleSessions error:", e.message)
+            return []
+          },
+        )
 
       for (const session of idleSessions) {
         console.log(`[registry] auto-stopping idle session ${session.id}`)
@@ -60,10 +63,12 @@ async function main() {
         if (stopResult.isErr()) {
           console.error(`[registry] WM stopWorker failed: ${stopResult.error.message}`)
         }
-        const ts = now()
-        await db.updateTable("registry_sessions").set({
-          state: "stopped", workerId: "", updatedAt: ts,
-        }).where("id", "=", session.id).execute()
+        const ts = BigInt(Math.floor(Date.now() / 1000))
+        gelQuery(() => setSessionStopped(gel, { id: session.id, updatedAt: Number(ts) }))
+          .match(
+            () => {},
+            (e) => console.error(`[registry] setSessionStopped failed: ${e.message}`),
+          )
       }
     } catch (err) {
       console.error("[registry] idle scanner error:", err)
